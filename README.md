@@ -1,47 +1,75 @@
 # PhonePhoning
 
-Send a text message to one or more phone numbers on a schedule.
+Send a text message to one or more phone numbers on a schedule, with no cloud SMS service.
 
-## How it works
+## Where the line really is
 
-Your code never talks to the phone network directly. It makes an HTTPS call to an SMS
-gateway (Twilio here), and the gateway hands the message to the carriers. So the whole
-problem is two pieces:
+SMS is a carrier protocol. A message enters the network only through a SIM the carrier
+issued. Services like Twilio are just companies that own a lot of SIMs and resell them over
+HTTP. You cannot replace the carrier, but you can replace the middleman by owning the SIM and
+the radio yourself. That is what this repo does. Two ways:
 
-1. **A sender** that hits the gateway API (`send_sms.py`, or `send_sms.js` in Node).
-2. **A scheduler** that runs the sender once a day (`.github/workflows/daily-sms.yml`,
-   or a cron entry on any always-on machine).
+| Route | What you need | Cost | Notes |
+|---|---|---|---|
+| **Your Android phone** (`send_sms_android.sh`) | Termux + Termux:API | Free, uses your plan | Fastest to get working. Phone must stay on and unoptimized. |
+| **A modem you own** (`send_sms_modem.py`) | USB LTE modem + SIM + any computer or Raspberry Pi | ~$30-60 modem, ~$5-10/mo prepaid SIM | Dedicated, always-on, no phone involved. |
 
-## Setup
+Both end up at the same place: your SIM, your carrier, the recipient. Nothing in between
+that you do not control.
 
-1. Create a Twilio account at twilio.com, get a phone number, and note your
-   Account SID, Auth Token, and the number.
-2. On a trial account you must verify each recipient number in the Twilio console
-   before it will accept messages to it.
-3. Install and run:
+Not possible: sending SMS with no SIM at all. That would mean peering with carriers over SS7
+and running your own SMS center, which requires carrier interconnect agreements that are
+not granted to individuals.
+
+## Route 1: your Android phone
+
+See the comments at the top of `send_sms_android.sh`. Summary:
+
+```bash
+pkg install termux-api cronie
+./send_sms_android.sh "+13219164708" "hello"
+```
+
+Schedule daily with `crontab -e` inside Termux. Disable battery optimization for Termux or
+Android will kill the job.
+
+iPhone: there is no supported way to script SMS from iOS. The Shortcuts app can send a text
+on a schedule through its Automation tab, but that is a GUI, not code.
+
+## Route 2: a modem you own
+
+Buy a 4G LTE USB modem or Raspberry Pi HAT (SIM7600 family, Quectel EC25, Huawei E3372) and a
+prepaid SIM. Avoid 2G-only boards like the SIM800L in the US; the 2G network is gone.
 
 ```bash
 pip install -r requirements.txt
-export TWILIO_ACCOUNT_SID=ACxxxxxxxx
-export TWILIO_AUTH_TOKEN=xxxxxxxx
-export TWILIO_FROM_NUMBER=+15550001111
-python send_sms.py --to +13219164708 --message "hello"
+python send_sms_modem.py --port /dev/ttyUSB2 --to +13219164708 --message "hello"
 ```
 
-## Running it daily
-
-**Option A: GitHub Actions (nothing to host).** Add the three values above as repository
-secrets under Settings > Secrets and variables > Actions. The workflow in
-`.github/workflows/daily-sms.yml` runs every day at 13:00 UTC. Edit the cron line to change
-the time. You can also trigger it by hand from the Actions tab.
-
-**Option B: cron on a machine that is always on.** `crontab -e`, then:
+The script talks to the modem with AT commands, the same text protocol modems have used since
+the 1980s. Watch it work with a serial terminal if you want to see what it is doing:
 
 ```
-0 9 * * * cd /path/to/PhonePhoning && TWILIO_ACCOUNT_SID=... TWILIO_AUTH_TOKEN=... TWILIO_FROM_NUMBER=... python send_sms.py
+AT                  -> OK
+AT+CPIN?            -> +CPIN: READY
+AT+CREG?            -> +CREG: 0,1
+AT+CMGF=1           -> OK
+AT+CMGS="+13219164708"
+> hello<Ctrl-Z>     -> +CMGS: 12
+```
+
+Schedule daily with cron on the machine the modem is plugged into:
+
+```
+0 9 * * * cd /home/pi/PhonePhoning && python send_sms_modem.py --port /dev/ttyUSB2 >> sms.log 2>&1
 ```
 
 ## Multiple recipients
 
-Pass several numbers to `--to`, or edit `DEFAULT_RECIPIENTS` in `send_sms.py`.
-Numbers must be in E.164 format: `+1` then the 10 digits for US numbers.
+Both scripts take a list of numbers. Numbers must be in E.164 format: `+1` then the 10 digits
+for US numbers, so 3219164708 becomes `+13219164708`.
+
+## A note on volume
+
+Carriers watch consumer SIMs for automated bulk sending. A few messages a day to people who
+know you is fine. Hundreds a day will get the SIM flagged and blocked.
